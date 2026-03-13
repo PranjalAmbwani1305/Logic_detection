@@ -1,21 +1,24 @@
 import streamlit as st
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
 from PIL import Image
 from torchvision import transforms
 
-# -----------------------------
+# --------------------
 # Hyperparameters
-# -----------------------------
+# --------------------
+
 NOISE_DIM = 100
 NGF = 32
+NDF = 32
 NUM_CHANNELS = 3
 
-# -----------------------------
-# Generator Model
-# -----------------------------
+device = torch.device("cpu")
+
+# --------------------
+# Generator
+# --------------------
+
 class Generator(nn.Module):
 
     def __init__(self):
@@ -46,45 +49,83 @@ class Generator(nn.Module):
     def forward(self, x):
         return self.main(x)
 
-# -----------------------------
-# Load Generator
-# -----------------------------
-generator = Generator()
-generator.load_state_dict(torch.load("generator.pth", map_location="cpu"))
+# --------------------
+# Discriminator
+# --------------------
+
+class Discriminator(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+        self.main = nn.Sequential(
+
+            nn.Conv2d(NUM_CHANNELS, NDF, 4, 2, 1, bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(NDF, NDF*2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(NDF*2),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(NDF*2, NDF*4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(NDF*4),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(NDF*4, NDF*8, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(NDF*8),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(NDF*8, 1, 4, 1, 0, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.main(x)
+
+# --------------------
+# Load Models
+# --------------------
+
+generator = Generator().to(device)
+generator.load_state_dict(torch.load("generator.pth", map_location=device))
 generator.eval()
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.title("🎨 AI Logo Generator (DCGAN)")
-st.write("Generate logos using a trained GAN model.")
+discriminator = Discriminator().to(device)
+discriminator.load_state_dict(torch.load("discriminator.pth", map_location=device))
+discriminator.eval()
 
-# -----------------------------
+# --------------------
+# Streamlit UI
+# --------------------
+
+st.title("🎨 AI Logo Generator & Detector")
+
+st.write("Generate logos using DCGAN and check uploaded logos.")
+
+# --------------------
 # Generate Logos
-# -----------------------------
-num_images = st.slider("Number of logos", 1, 12, 4)
+# --------------------
+
+num = st.slider("Number of logos",1,8,4)
 
 if st.button("Generate Logos"):
 
-    noise = torch.randn(num_images, NOISE_DIM, 1, 1)
+    noise = torch.randn(num, NOISE_DIM, 1, 1).to(device)
 
     with torch.no_grad():
-        fake_images = generator(noise).cpu()
+        fake = generator(noise).cpu()
 
-    cols = st.columns(num_images)
+    cols = st.columns(num)
 
-    for i in range(num_images):
+    for i in range(num):
 
-        img = (fake_images[i].permute(1,2,0)+1)/2
-        img = img.numpy()
+        img = (fake[i].permute(1,2,0)+1)/2
+        cols[i].image(img.numpy(), caption=f"Logo {i+1}")
 
-        cols[i].image(img, caption=f"Logo {i+1}")
+# --------------------
+# Upload Logo
+# --------------------
 
-st.divider()
-
-# -----------------------------
-# Upload Logo Section
-# -----------------------------
 st.subheader("Upload Logo")
 
 uploaded = st.file_uploader("Upload logo image", type=["png","jpg","jpeg"])
@@ -96,31 +137,18 @@ if uploaded:
 
     transform = transforms.Compose([
         transforms.Resize((64,64)),
-        transforms.ToTensor()
+        transforms.ToTensor(),
+        transforms.Normalize((0.5,0.5,0.5),(0.5,0.5,0.5))
     ])
 
-    img_tensor = transform(image).unsqueeze(0)
-
-    # Generate sample logos
-    noise = torch.randn(10, NOISE_DIM, 1, 1)
+    img = transform(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        fake_images = generator(noise)
+        pred = discriminator(img).item()
 
-    similarities = []
+    st.write("Prediction Score:", round(pred,3))
 
-    for fake in fake_images:
-        fake = fake.unsqueeze(0)
-        sim = F.cosine_similarity(
-            img_tensor.flatten(),
-            fake.flatten(),
-            dim=0
-        )
-        similarities.append(sim.item())
-
-    max_sim = max(similarities)
-
-    if max_sim > 0.8:
-        st.error("❌ Logo is NOT unique (similar pattern found)")
+    if pred > 0.5:
+        st.success("✅ Logo looks REAL (similar to training logos)")
     else:
-        st.success("✅ Logo appears UNIQUE")
+        st.error("❌ Logo looks FAKE / UNIQUE")
